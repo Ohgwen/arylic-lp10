@@ -1,0 +1,3 @@
+# Private key: re-extract from the Go Control APK, never commit (see client-certificate.md)
+*.key
+client.key
