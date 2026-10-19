@@ -1,8 +1,10 @@
 # LUCI metadata over the LAN — research notes
 
-Status: **in progress.** Authenticated LAN access to the LP10's metadata service
-is solved; reading a now-playing register is blocked on one remaining step (a
-register handshake, see [Remaining work](#remaining-work)).
+Status: **handshake solved.** Authenticated, two-way LAN access to the LP10's
+metadata service works end-to-end on ADB-less firmware (verified live on both
+players). The one open item is capturing populated metadata values from a device
+that is actively playing — see [handshake-solved.md](handshake-solved.md) and
+[remaining-work.md](remaining-work.md).
 
 This directory records the reverse-engineering done to find a way to read
 now-playing metadata (track title/artist/album/artwork, playback state) on LP10
@@ -28,9 +30,14 @@ was modified.
   **authenticate successfully to both players** on 7777.
 - The LUCI packet frame was reversed: **10-byte header, CRC-16/XMODEM**, payload
   from byte 10. See [luci-protocol.md](luci-protocol.md).
-- **Remaining:** the server NACKs data requests until the client sends a
-  **register** packet first. The register `CommandType`/`appId` encoding is a Dart
-  AOT constant in the app's `libapp.so` and still needs to be recovered.
+- **Handshake (solved):** the first frame must authenticate on **CmdID 3** with
+  `{"Authentication":"Basic","Value":base64("admin:Wireless")}`. After that,
+  metadata is read by tunnelling **A31 MCU** commands (`MCU+...+GET&`) on **CmdID
+  64** and parsing the `AXX+...` replies. There was no Dart `appId` secret — it is
+  plain HTTP Basic auth. See [handshake-solved.md](handshake-solved.md).
+- **Open:** capture populated values (volume/track) from a *playing* device; then
+  wire a LUCI-over-TLS transport into the integration. See
+  [remaining-work.md](remaining-work.md).
 
 ## Documents
 
@@ -38,7 +45,8 @@ was modified.
 | --- | --- |
 | [device-findings.md](device-findings.md) | Live probe results: ports, identity, UPnP, control port. |
 | [firmware-analysis.md](firmware-analysis.md) | OTA server/URL, `.swu` structure, why adbd is absent. |
-| [luci-protocol.md](luci-protocol.md) | The LUCI 7777 TLS protocol: header, CRC, field offsets, evidence. |
+| [luci-protocol.md](luci-protocol.md) | The LUCI 7777 TLS protocol: header, CRC, field offsets, dispatch. |
+| [handshake-solved.md](handshake-solved.md) | **The solved auth handshake + MCU metadata channel, with live evidence.** |
 | [client-certificate.md](client-certificate.md) | Where the client cert/key came from and how to re-extract. |
 | [remaining-work.md](remaining-work.md) | Exactly what's left, with pointers into the binaries. |
 
@@ -48,9 +56,10 @@ Reusable scripts are in [`tools/research/`](../../../tools/research/):
 
 - `lp10_probe.py` — identity + control-port status + port scan (read-only).
 - `upnp_nowplaying.py` — SSDP-discover the renderer and read AVTransport/RenderingControl.
-- `luci_tls_client.py` — open a mutual-TLS session to 7777 with the client cert,
-  build XMODEM-CRC LUCI frames, and send/receive. This is the scaffold to finish
-  the register handshake on.
+- `luci_client.py` — **the working authenticated client**: mutual-TLS + Basic
+  auth on CmdID 3 + MCU query tunnel on CmdID 64 + frame parser. Verified live.
+- `luci_tls_client.py` — the earlier low-level TLS/frame scaffold (kept for
+  reference; `luci_client.py` supersedes it).
 
 ## Environment used
 

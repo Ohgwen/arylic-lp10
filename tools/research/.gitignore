@@ -1,0 +1,4 @@
+# Never commit the private key, or local cert copies placed beside the tools.
+*.key
+client.key
+client.pem

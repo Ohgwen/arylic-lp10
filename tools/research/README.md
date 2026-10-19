@@ -8,7 +8,8 @@ firmware without ADB. Background: [`docs/research/luci-metadata/`](../../docs/re
 | `lp10_probe.py <ip>` | UDP-1800 identity + TCP port scan (reachability). |
 | `upnp_nowplaying.py <ip>` | SSDP-discover the renderer; read state/volume/mute/position. |
 | `ota_fetch.py --device-id <id>` | Ask the OTA server for the current firmware URL. |
-| `luci_tls_client.py --host <ip> --handshake` | Mutual-TLS to 7777 with the client cert; build/parse LUCI frames. The scaffold to finish the register handshake on. |
+| `luci_client.py --host <ip> --auth-only` | **Working authenticated client**: mutual-TLS + Basic auth (CmdID 3) + MCU query tunnel (CmdID 64) + frame parser. Verified live. |
+| `luci_tls_client.py --host <ip> --handshake` | Earlier low-level TLS/frame scaffold; superseded by `luci_client.py`, kept for reference. |
 
 ## Setup
 
@@ -19,6 +20,7 @@ pip install crcmod          # only luci_tls_client.py's CRC is inlined; crcmod o
 #   see docs/research/luci-metadata/client-certificate.md
 ```
 
-Everything here is read-only against the devices. `luci_tls_client.py` intentionally
-builds only zero-length GET-style frames; do not add SET/write frames until the
-command semantics are confirmed.
+Everything here is read-only against the devices. `luci_client.py` sends only MCU
+`+GET&`/`+INF&` queries; do not add MCU SET commands (e.g. `MCU+VOL+<n>&`) until
+each is understood. The handshake is documented in
+`docs/research/luci-metadata/handshake-solved.md`.

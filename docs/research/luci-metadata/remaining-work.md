@@ -1,70 +1,61 @@
 # Remaining work
 
-Goal: read now-playing (MID 42) over the authenticated 7777 channel and expose it
-to the integration on firmware without ADB.
+Goal: read now-playing / volume / source over the authenticated 7777 channel on
+firmware without ADB, and expose it to the integration.
 
-## The one blocker: the register handshake
+## Solved
 
-The server NACKs every data request (`00 00 02 00 00 03 d2 10 00 00`) until the
-connection **registers**. The Go Control app's `libre_luci_actions` package does:
+The handshake blocker from the first pass is **done** — see
+[handshake-solved.md](handshake-solved.md). In short:
 
-```
-send/register.dart   ->   receive/register_ack.dart
-# then: get_play_info_action, get_info, get_version, preset/*, etc.
-```
+- Mutual-TLS connect with the bundled client cert.
+- Authenticate on **CmdID 3** with `{"Authentication":"Basic","Value":
+  base64("admin:Wireless")}`. Reply status byte `1` = OK.
+- Tunnel **A31 MCU** text commands on **CmdID 64**; read `AXX+...` replies.
 
-and logs `": connected and registered successfully"`. `LuciRegisterInfo(appId: …)`
-is the payload. So the first packet after TLS connect must be a **register** packet.
+`tools/research/luci_client.py` implements and verifies all of this live against
+both players. There was no Dart `appId`/register secret — that earlier guess was
+wrong; it is plain Basic auth.
 
-### What needs recovering
+## Open: capture populated metadata values
 
-1. The **register packet**: its `Command`/`Type` byte value(s), and the `appId`
-   payload (likely a small JSON or string the app generates — see
-   `LuciRegisterInfo`, `_createRandomId`, `registerDevice` in the Dart snapshot).
-2. The **Command/Type/Status byte assignment** among header offsets {0, 2, 5}
-   (luci-protocol.md pins ID@3, CRC@6, Len@8 but not which of the remaining three
-   is Command vs Type vs Status).
-3. The **GET value** and how a MID is requested (register-for-MID vs one-shot GET).
-   `get_play_info_action` is the request that yields MID 42's JSON.
+The transport, auth, framing and MCU tunnel are proven, but during testing **both
+players were STOPPED** (idle NET source), so the value-bearing replies were not yet
+captured. Still to confirm, ideally with a device actively playing:
 
-### Where to get it
+1. The exact `AXX+VOL+<n>` reply to `MCU+VOL+GET&` (ground-truth volume is also
+   visible via UPnP `GetVolume`, so cross-check there).
+2. The `AXX+SNG+INF` now-playing reply shape (title/artist/album/duration/pos) and
+   `AXX+PLY`/`AXX+PLP`/`AXX+PLM` for state/position/mode. The field grammar is in
+   the app: `package:a31_tcp_actions/src/receive/axx/axx_*.dart` — decode those
+   (strings are readable in `libapp.so`; numeric bits need Blutter) or just capture
+   live and read the ASCII.
+3. Whether values arrive synchronously after the `MCU+...+GET&` or only as async
+   pushes on change. On connect the UART controller streams a capability list
+   (`SRC;/VOL;/MUT;…/VER;` each + `SUCCESS`) which is **not** the values.
 
-- **Dart AOT snapshot** `ex_config.armeabi_v7a/lib/armeabi-v7a/libapp.so` contains
-  the encoder `LibreSendMsgEncoder` and the `libre_luci_actions` logic. Identifier
-  strings are present (grep worked), but the numeric constants are in compiled
-  Dart. Tools: Blutter (Dart AOT → C++/pseudocode), or `darter`/`doldrums` for the
-  snapshot, then read `register.dart` / `get_play_info_action.dart` encoders.
-- **Dynamic capture (easiest)**: run Go Control against a player and capture the
-  7777 TLS. Because you hold the client key, you can MITM with `mitmproxy`/`socat`
-  + the extracted `client.pem`/`client.key` and the server cert, or patch the app
-  to log plaintext frames. One real register+get_play_info exchange gives the exact
-  bytes to replay.
-- **Firmware side**: `luciserver`'s `handleCmdPacket` dispatch and the register
-  handler show which Command/Type the server expects and what a register must
-  contain. Start from `fcn.0001dba0` (deserializer) → the handler it calls, and
-  search for the register/"REGISTER MID" path (`libluci_helper.so` has
-  `REGISTER MID FAIL`).
+## Then: wire it into the integration
 
-## After the handshake works
+- Add a LUCI-over-TLS transport (7777 + bundled client cert) selected when `adbd`
+  is absent, as an alternative to the ADB path.
+- Map `AXX+...` fields to the same now-playing shape the repo's
+  `luci.parse_now_playing` produces, so the coordinator/entities are unchanged.
+- Keep it **read-only**: only `MCU+...+GET&`/`+INF&`. Do not send MCU SET commands
+  (e.g. `MCU+VOL+<n>&`) until each is understood and intentionally supported.
 
-- Read MID 42, parse the `Window CONTENTS` JSON exactly like the repo's
-  `luci.parse_now_playing` (reuse that parser; only the transport changes).
-- MID 51 for AirPlay play/pause, as the repo already does.
-- Then: add a transport in the integration that uses LUCI-over-TLS (7777 + bundled
-  client cert) as an alternative to ADB, selected when adbd is absent. Keep it
-  read-only (GET, `DataLen = 0`); never send SET frames.
+## Cert handling for a shipped integration
 
-## Nice-to-haves / loose ends
-
-- Confirm whether the `[obj+0x169]` flag (CRC-skip gate) is ever 0 in practice; if
-  so, CRC can be sent as 0.
-- Identify what port 9090 actually is (dynamically bound; not needed for metadata).
-- Decide cert handling for a shipped integration (bundling a shared app cert has
-  obvious caveats; document clearly and keep it LAN-only).
+Bundling a shared app-derived client cert has obvious caveats (it's the Go Control
+app's cert; it could be rotated/revoked by a firmware update). Document clearly,
+keep LAN-only, and consider making the cert path user-configurable. The private key
+is **not** committed here — re-extract per [client-certificate.md](client-certificate.md).
 
 ## Quick restart checklist
 
-1. Re-extract `client.pem`/`client.key` (client-certificate.md).
-2. `python tools/research/luci_tls_client.py --host <ip> --handshake` → confirm TLS.
-3. Implement register in that script (the gap above), then `--read-mid 42`.
-4. Parse JSON → done.
+1. Re-extract `client.pem`/`client.key` (client-certificate.md) beside the tool.
+2. `python tools/research/luci_client.py --host <ip> --auth-only` → expect
+   `AUTH OK as 'admin'`.
+3. Start playback on that device, then
+   `python tools/research/luci_client.py --host <ip> --query 'MCU+SNG+INF&'
+   --query 'MCU+VOL+GET&' --listen 5` and read the `AXX+...` frames.
+4. Map fields → integration transport.
