@@ -165,8 +165,17 @@ def parse_now_playing(replies: dict[str, str]) -> dict[str, Any]:
     play_state = _integer(_field(replies.get("play", ""), "PLA"), 0, 9)
     position_ms, duration_ms = parse_elapsed(replies.get("elapsed", ""))
 
+    # PLA is the reliable play signal: 1 = playing, 0 (or anything else) =
+    # paused/stopped. When stopped the control port KEEPS the last track's
+    # title/album and a frozen position, so presence of track text does NOT
+    # mean playing, and a known duration does not either (a paused track still
+    # reports its total). Only PLA==1 (corroborated by an advancing ELP) means
+    # audio is actually playing.
+    playing = None if play_state is None else play_state == 1
     has_track = bool(title or artist or album) or (duration_ms or 0) > 0
-    idle = not has_track and (position_ms or 0) <= 0
+    # Idle (blank the player) only when it is not playing AND holds no track at
+    # all. A not-playing player that still holds a track reads as paused.
+    idle = playing is not True and not has_track
     result: dict[str, Any] = {
         "available": True,
         "title": title,
@@ -184,7 +193,7 @@ def parse_now_playing(replies: dict[str, str]) -> dict[str, Any]:
         # value marks "active, not AirPlay" so the AirPlay-only position
         # correction stays disabled on this transport.
         "current_source": 0 if idle else 2,
-        "playing": None if play_state is None else play_state == 0,
+        "playing": playing,
         "idle": idle,
         "can_previous": True,
         "can_next": True,

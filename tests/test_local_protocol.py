@@ -59,33 +59,39 @@ class ProtocolTests(unittest.TestCase):
 
     def test_now_playing_over_control_port(self):
         # ADB-free metadata: the player answers TIT/ART/ALB/PLA/ELP on TCP 2018.
+        # PLA:1 == playing; a live stream reports an unknown (-1) total.
         playing = protocol.parse_now_playing({
-            "title": "TIT:7 Summers;", "artist": "ART:Morgan Wallen;",
-            "album": "ALB:Dangerous: The Double Album;",
-            "play": "PLA:0;", "elapsed": "ELP:209825/229123;",
+            "title": "TIT:A Long Time Gone;", "artist": "ART:The Band;",
+            "album": "ALB:Live;", "play": "PLA:1;", "elapsed": "ELP:18038/195000;",
         })
         self.assertTrue(playing["available"])
-        self.assertEqual(playing["title"], "7 Summers")
-        self.assertEqual(playing["artist"], "Morgan Wallen")
-        self.assertEqual(playing["position_ms"], 209825)
-        self.assertEqual(playing["duration_ms"], 229123)
+        self.assertEqual(playing["title"], "A Long Time Gone")
+        self.assertEqual(playing["position_ms"], 18038)
+        self.assertEqual(playing["duration_ms"], 195000)
         self.assertTrue(playing["playing"])
         self.assertFalse(playing["idle"])
         self.assertEqual(playing["playback_state_source"], "control_port")
-        # A live stream reports an unknown (-1) total duration.
-        stream = protocol.parse_now_playing({
+
+        # PLA:0 with a retained (stale) track == paused, NOT playing, NOT idle.
+        # The control port keeps the last title/position after a stop, and a
+        # known duration does not imply playback.
+        paused = protocol.parse_now_playing({
             "title": "TIT:Ordinary Dream;", "artist": "ART:Electric Light Orchestra;",
             "album": "ALB:Zoom;", "play": "PLA:0;", "elapsed": "ELP:180782/-1;",
         })
-        self.assertIsNone(stream["duration_ms"])
-        self.assertEqual(stream["position_ms"], 180782)
-        # A quiet player returns empty text and reads as idle, not unavailable.
+        self.assertFalse(paused["playing"])
+        self.assertFalse(paused["idle"])
+        self.assertEqual(paused["title"], "Ordinary Dream")
+        self.assertIsNone(paused["duration_ms"])
+
+        # A player that is not playing and holds no track at all is idle.
         idle = protocol.parse_now_playing({
             "title": "TIT:;", "artist": "ART:;", "album": "ALB:;",
-            "play": "", "elapsed": "ELP:0/-1;",
+            "play": "PLA:0;", "elapsed": "ELP:0/-1;",
         })
         self.assertTrue(idle["available"])
         self.assertTrue(idle["idle"])
+        self.assertFalse(idle["playing"])
         self.assertEqual(idle["current_source"], 0)
 
     def test_upnp_album_art_extraction(self):
@@ -148,7 +154,7 @@ class ProtocolTests(unittest.TestCase):
 
         def fake_query(command, *args, **kwargs):
             table = {"TIT;": "TIT:Song;", "ART;": "ART:Band;", "ALB;": "ALB:Disc;",
-                     "PLA;": "PLA:0;"}
+                     "PLA;": "PLA:1;"}
             if command == "ELP;":
                 raise OSError("timed out")  # one field may time out while idle
             return table[command]
